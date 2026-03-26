@@ -1,0 +1,154 @@
+# =============================================================================
+# Docker-DBM - Docker Compose Template
+# Powered by KMTeam LLC
+# =============================================================================
+#
+# This template demonstrates the LAYERED NETWORK ARCHITECTURE for maximum
+# security. It uses separate networks for database servers and clients.
+#
+# NETWORK ARCHITECTURE:
+#   - db_net: Internal network for database servers (PostgreSQL, MariaDB)
+#   - pg_net: PostgreSQL client network
+#   - mariadb_net: MariaDB client network
+#   - app_internal: Per-application isolated network
+#
+# USAGE:
+#   1. Create networks: docker network create db_net --internal
+#                       docker network create pg_net
+#                       docker network create mariadb_net
+#   2. Copy .env.example to .env and fill in your values
+#   3. Run: docker compose run --rm docker-dbm
+#   4. On success, run: docker compose up -d app
+#
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # Database Provisioner (Ephemeral Init Container)
+  # ===========================================================================
+  # This container runs once to create the database and user, then exits.
+  # It requires ADMIN credentials to create resources on the shared DB server.
+  # NOTE: Only connects to pg_net (PostgreSQL) or mariadb_net (MariaDB)
+  docker-dbm:
+    # Option 1: Use pre-built image from GHCR
+    image: ghcr.io/kmteam-llc/docker-dbm:latest
+    
+    # Option 2: Build locally (uncomment to use)
+    # build:
+    #   context: ./docker-dbm
+    #   dockerfile: Dockerfile
+    
+    # Load ALL environment variables including admin credentials
+    # This is safe because this container is ephemeral and never exposed
+    env_file:
+      - .env
+    
+    # Connect ONLY to the database client network needed
+    # Choose pg_net for PostgreSQL or mariadb_net for MariaDB
+    networks:
+      - pg_net
+      # - mariadb_net  # Uncomment for MariaDB instead
+    
+    # Container will exit after provisioning
+    # Exit code 0 = success, Exit code 1 = failure (DB/user exists)
+    restart: "no"
+
+  # ===========================================================================
+  # Your Application Service
+  # ===========================================================================
+  app:
+    image: your-app-image:latest
+    
+    # CRITICAL: Wait for Docker-DBM to complete successfully
+    # This prevents the app from starting if database provisioning fails
+    depends_on:
+      docker-dbm:
+        condition: service_completed_successfully
+    
+    # SECURITY: Map ONLY the app credentials, NOT the admin credentials
+    # This ensures your application never has access to admin privileges
+    environment:
+      # Database connection settings for your application
+      - DB_HOST=${DB_HOST}
+      - DB_PORT=${DB_PORT}
+      - DB_NAME=${APP_DB_NAME}
+      - DB_USER=${APP_DB_USER}
+      - DB_PASS=${APP_DB_PASS}
+      # Note: ADMIN_USER and ADMIN_PASS are NOT exposed here
+    
+    # Network isolation: App has DB access + its own internal network
+    # This prevents apps from communicating with each other
+    networks:
+      - pg_net         # Database access (use mariadb_net for MariaDB)
+      - app_internal   # Internal app services (redis, cache, etc.)
+    
+    # Example port mapping
+    ports:
+      - "8080:8080"
+
+  # ===========================================================================
+  # Example: Internal Service (No Database Access)
+  # ===========================================================================
+  # Internal services like Redis, Memcached should ONLY be on app_internal
+  # They have NO access to database networks for security
+  # redis:
+  #   image: redis:7-alpine
+  #   networks:
+  #     - app_internal  # Internal only - no pg_net or mariadb_net!
+
+# =============================================================================
+# Network Configuration - Layered Security Architecture
+# =============================================================================
+networks:
+  # ---------------------------------------------------------------------------
+  # Database Client Network (PostgreSQL)
+  # ---------------------------------------------------------------------------
+  # External network for PostgreSQL clients
+  # Created with: docker network create pg_net
+  pg_net:
+    external: true
+  
+  # ---------------------------------------------------------------------------
+  # Database Client Network (MariaDB) - Uncomment if using MariaDB
+  # ---------------------------------------------------------------------------
+  # External network for MariaDB clients
+  # Created with: docker network create mariadb_net
+  # mariadb_net:
+  #   external: true
+  
+  # ---------------------------------------------------------------------------
+  # Application Internal Network
+  # ---------------------------------------------------------------------------
+  # Isolated bridge network for this application
+  # Services like Redis should ONLY be on this network
+  app_internal:
+    driver: bridge
+
+# =============================================================================
+# ADDITIONAL SETUP (Database Server Stack - Separate docker-compose.yml)
+# =============================================================================
+# Your database servers should be in a separate compose file with this network config:
+#
+# services:
+#   postgres:
+#     image: postgres:16
+#     networks:
+#       - db_net      # Internal database network
+#       - pg_net      # Client access network
+#     # NO ports exposed!
+#
+#   mariadb:
+#     image: mariadb:11
+#     networks:
+#       - db_net      # Internal database network
+#       - mariadb_net # Client access network
+#     # NO ports exposed!
+#
+# networks:
+#   db_net:
+#     external: true  # Created with: docker network create db_net --internal
+#   pg_net:
+#     external: true
+#   mariadb_net:
+#     external: true
+# =============================================================================
